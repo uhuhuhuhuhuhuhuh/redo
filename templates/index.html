@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Image Cropper</title>
+</head>
+<body>
+    <h1>Upload an image to crop</h1>
+    <form action="/crop_image" method="post" enctype="multipart/form-data">
+        <input type="file" name="image">
+        <input type="submit" value="Crop">
+    </form>
+    {% if image %}
+    <h1>Cropped Image</h1>
+    <img src="data:image/jpeg;base64,{{ image }}">
+    {% endif %}
+</body>
+</html>
