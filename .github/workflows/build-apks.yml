@@ -3,6 +3,8 @@ name: Build bridge APKs
 on:
   push:
     branches: [meta-chatgpt-bridges]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
