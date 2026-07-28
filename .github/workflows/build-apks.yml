@@ -28,6 +28,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
+      - name: Materialize generated activity
+        run: |
+          base64 --decode companion/src/main/generated/MainActivity.kt.gz.b64 \
+            | gzip --decompress \
+            > companion/src/main/java/com/druvane/glasseshub/MainActivity.kt
       - name: Build APK
         id: build
         env:
@@ -37,19 +42,21 @@ jobs:
           gradle --no-daemon --console=plain :companion:assembleDebug > build.log 2>&1
           code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          tail -n 250 build.log
+          tail -n 300 build.log
           exit 0
-      - name: Collect APK and source notes
+      - name: Collect APK and source
         if: steps.build.outputs.exit_code == '0'
         run: |
           mkdir -p dist
-          cp companion/build/outputs/apk/debug/companion-debug.apk dist/GlassesHub-debug.apk
+          cp companion/build/outputs/apk/debug/companion-debug.apk dist/GlassesHub-v0.1.1-debug.apk
           cp README.md dist/README.txt
+          zip -qr dist/GlassesHub-v0.1.1-source.zip . \
+            -x '.git/*' '*/build/*' 'dist/*' 'build.log' '.gradle/*'
       - name: Upload APK
         if: steps.build.outputs.exit_code == '0'
         uses: actions/upload-artifact@v4
         with:
-          name: glasses-hub-apk
+          name: glasses-hub-v0.1.1
           path: dist/*
           if-no-files-found: error
       - name: Upload build log
