@@ -17,7 +17,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,6 +52,7 @@ object MetaGlassesController {
     private var streamStateJob: Job? = null
     private var streamErrorJob: Job? = null
     private var frameJob: Job? = null
+    private var audioJob: Job? = null
     private var reconnectJob: Job? = null
     private var reconnectAttempt = 0
 
@@ -159,6 +159,7 @@ object MetaGlassesController {
                     DeviceSessionState.STOPPED -> {
                         if (session === created) {
                             clearSessionReferences()
+                            resetMediaPipelines("Glasses session disconnected")
                             _status.value = _status.value.copy(connection = "Disconnected")
                             if (desiredConnection.get()) scheduleReconnect("Session stopped")
                         }
@@ -189,25 +190,33 @@ object MetaGlassesController {
             if (activeSession.state.value != DeviceSessionState.STARTED) return
             if (stream != null) return
 
-            _status.value = _status.value.copy(camera = "Starting 720x1280 at 30 FPS", lastError = null)
-            activeSession.addStream(
-                StreamConfiguration(videoQuality = VideoQuality.HIGH, frameRate = 30),
-            ).onSuccess { added ->
-                stream = added
-                observeStream(added)
-                added.start()
-            }.onFailure { error, _ ->
-                val message = error.description
-                _status.value = _status.value.copy(camera = "Camera unavailable", lastError = message)
-                scheduleStreamRetry(message)
-            }
+            val configuration = StreamConfiguration(
+                videoQuality = VideoQuality.HIGH,
+                frameRate = 30,
+            )
+            _status.value = _status.value.copy(
+                camera = "Starting maximum DAT live mode · 720x1280 at 30 FPS",
+                lastError = null,
+            )
+            activeSession.addStream(configuration)
+                .onSuccess { added ->
+                    stream = added
+                    observeStream(added, configuration)
+                    added.start()
+                }
+                .onFailure { error, _ ->
+                    val message = error.description
+                    _status.value = _status.value.copy(camera = "Camera unavailable", lastError = message)
+                    scheduleStreamRetry(message)
+                }
         }
     }
 
-    private fun observeStream(added: Stream) {
+    private fun observeStream(added: Stream, configuration: StreamConfiguration) {
         streamStateJob?.cancel()
         streamErrorJob?.cancel()
         frameJob?.cancel()
+        audioJob?.cancel()
 
         streamStateJob = scope.launch {
             added.state.collect { state ->
@@ -215,7 +224,7 @@ object MetaGlassesController {
                 _status.value = _status.value.copy(camera = state.toString())
                 if (state == StreamState.CLOSED && stream === added) {
                     clearStreamReferences()
-                    FrameHub.resetSource("Camera stream closed")
+                    resetMediaPipelines("Camera and microphone stream closed")
                     if (desiredCamera.get()) scheduleStreamRetry("Camera stream closed")
                 }
             }
@@ -229,12 +238,15 @@ object MetaGlassesController {
         }
         frameJob = scope.launch {
             added.videoStream.collect { frame ->
-                val jpeg = I420JpegEncoder.encode(frame.buffer, frame.width, frame.height)
-                if (jpeg != null) {
-                    FrameHub.publish(jpeg, frame.width, frame.height)
-                }
+                RawFramePipeline.submit(
+                    buffer = frame.buffer,
+                    width = frame.width,
+                    height = frame.height,
+                    presentationTimeUs = frame.presentationTimeUs,
+                )
             }
         }
+        audioJob = MetaAudioBridge.start(added, configuration, scope)
     }
 
     private fun scheduleReconnect(reason: String) {
@@ -267,13 +279,10 @@ object MetaGlassesController {
         lock.withLock {
             val current = stream
             clearStreamReferences()
-            try {
-                current?.stop()
-            } catch (error: RuntimeException) {
-                Log.w(TAG, "Failed to stop stream", error)
-            }
+            runCatching { current?.stop() }
+                .onFailure { error -> Log.w(TAG, "Failed to stop stream", error) }
             _status.value = _status.value.copy(camera = label)
-            FrameHub.resetSource("$label - no glasses frames")
+            resetMediaPipelines("$label - no glasses media")
         }
     }
 
@@ -283,21 +292,24 @@ object MetaGlassesController {
             val currentSession = session
             clearStreamReferences()
             clearSessionReferences()
-            try {
-                currentStream?.stop()
-            } catch (_: RuntimeException) {
-            }
-            try {
-                currentSession?.stop()
-            } catch (_: RuntimeException) {
-            }
+            runCatching { currentStream?.stop() }
+            runCatching { currentSession?.stop() }
             _status.value = _status.value.copy(connection = label, camera = "Stopped")
+            resetMediaPipelines("$label - no glasses media")
         }
+    }
+
+    private fun resetMediaPipelines(label: String) {
+        MediaTimeline.reset()
+        RawFramePipeline.clear(label)
+        AudioFrameHub.reset(label)
     }
 
     private fun clearStreamReferences() {
         frameJob?.cancel()
         frameJob = null
+        audioJob?.cancel()
+        audioJob = null
         streamStateJob?.cancel()
         streamStateJob = null
         streamErrorJob?.cancel()
