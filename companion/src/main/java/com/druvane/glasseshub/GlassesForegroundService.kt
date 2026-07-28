@@ -11,24 +11,26 @@ import androidx.core.content.ContextCompat
 
 class GlassesForegroundService : Service() {
     private lateinit var webServer: LocalWebServer
+    private lateinit var droidCamServer: DroidCamCompatServer
     private val testPattern = TestPatternGenerator()
     private var webMode = MODE_STOPPED
 
     override fun onCreate() {
         super.onCreate()
         webServer = LocalWebServer(applicationContext)
+        droidCamServer = DroidCamCompatServer(applicationContext)
         MetaGlassesController.startConnection()
         startForeground(NOTIFICATION_ID, buildNotification("Maintaining glasses connection"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START_WEB -> startWeb(useTestPattern = false)
-            ACTION_START_TEST -> startWeb(useTestPattern = true)
-            ACTION_STOP_WEB -> stopWeb()
+            ACTION_START_WEB -> startLanStreams(useTestPattern = false)
+            ACTION_START_TEST -> startLanStreams(useTestPattern = true)
+            ACTION_STOP_WEB -> stopLanStreams()
             ACTION_RECONNECT -> MetaGlassesController.forceReconnect()
             ACTION_STOP_SERVICE -> {
-                stopWeb()
+                stopLanStreams()
                 MetaGlassesController.stopConnection()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -38,43 +40,57 @@ class GlassesForegroundService : Service() {
         return START_STICKY
     }
 
-    private fun startWeb(useTestPattern: Boolean) {
-        val started = webServer.start()
-        if (!started) {
+    private fun startLanStreams(useTestPattern: Boolean) {
+        val webStarted = webServer.start()
+        val droidCamStarted = droidCamServer.start()
+        if (!webStarted && !droidCamStarted) {
+            val error = webServer.lastError ?: droidCamServer.lastError ?: "Unable to start Wi-Fi LAN streaming"
             WebCameraState.update(
                 WebCameraState.State(
                     running = false,
                     mode = "Failed",
-                    error = "Port ${LocalWebServer.DEFAULT_PORT} is unavailable",
+                    error = error,
                 ),
             )
+            updateNotification(error)
             return
         }
 
         if (useTestPattern) {
             MetaGlassesController.setCameraRequested(false)
             testPattern.start()
+            AudioFrameHub.reset("Test pattern mode has no microphone audio")
             webMode = MODE_TEST
             FrameHub.resetSource("Starting test pattern")
         } else {
             testPattern.stop()
+            MediaTimeline.reset()
             MetaGlassesController.setCameraRequested(true)
             webMode = MODE_GLASSES
-            FrameHub.resetSource("Waiting for Meta glasses camera")
+            RawFramePipeline.clear("Waiting for Meta glasses camera")
+            AudioFrameHub.reset("Waiting for Meta glasses microphones")
         }
         WebCameraState.update(
             WebCameraState.State(
-                running = true,
-                url = webServer.viewerUrl(),
+                running = webStarted || droidCamStarted,
+                url = if (webStarted) webServer.viewerUrl() else "",
                 mode = webMode,
+                error = when {
+                    !webStarted -> webServer.lastError
+                    !droidCamStarted -> droidCamServer.lastError
+                    else -> null
+                },
             ),
         )
-        updateNotification("Web camera active: $webMode")
+        updateNotification(
+            "Wi-Fi LAN active · ${LanStreamSettings.delayMs()} ms fixed delay · $webMode",
+        )
     }
 
-    private fun stopWeb() {
+    private fun stopLanStreams() {
         testPattern.stop()
         webServer.stop()
+        droidCamServer.stop()
         MetaGlassesController.setCameraRequested(false)
         webMode = MODE_STOPPED
         WebCameraState.update(WebCameraState.State())
@@ -114,12 +130,12 @@ class GlassesForegroundService : Service() {
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .addAction(0, "Reconnect", reconnectIntent)
-            .addAction(0, "Stop web", stopWebIntent)
+            .addAction(0, "Stop LAN", stopWebIntent)
             .build()
     }
 
     override fun onDestroy() {
-        stopWeb()
+        stopLanStreams()
         MetaGlassesController.shutdown()
         super.onDestroy()
     }
@@ -135,8 +151,8 @@ class GlassesForegroundService : Service() {
         const val ACTION_RECONNECT = "com.druvane.glasseshub.action.RECONNECT"
         const val ACTION_STOP_SERVICE = "com.druvane.glasseshub.action.STOP_SERVICE"
         private const val MODE_STOPPED = "Stopped"
-        private const val MODE_GLASSES = "Meta glasses 720x1280 / 30 FPS"
-        private const val MODE_TEST = "Test pattern 720x1280 / 10 FPS"
+        private const val MODE_GLASSES = "Meta glasses max DAT live mode · 720x1280 / 30 FPS"
+        private const val MODE_TEST = "Test pattern · 720x1280 / 10 FPS"
 
         fun ensureRunning(context: Context) {
             ContextCompat.startForegroundService(
