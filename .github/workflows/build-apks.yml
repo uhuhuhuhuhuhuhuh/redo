@@ -1,0 +1,36 @@
+name: Build bridge APKs
+
+on:
+  push:
+    branches: [meta-chatgpt-bridges]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build debug APKs
+        run: gradle --no-daemon :voicebridge:assembleDebug :relaybridge:assembleDebug
+      - name: Collect APKs
+        run: |
+          mkdir -p dist
+          cp voicebridge/build/outputs/apk/debug/voicebridge-debug.apk dist/GlassesVoiceBridge-no-key.apk
+          cp relaybridge/build/outputs/apk/debug/relaybridge-debug.apk dist/GlassesChatRelay-no-key.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: meta-chatgpt-no-key-apks
+          path: dist/*.apk
+          if-no-files-found: error
