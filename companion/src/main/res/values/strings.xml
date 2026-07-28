@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Glasses Hub</string>
+    <string name="accessibility_service_description">Sends a pending prompt to the visible ChatGPT app and reads the visible response aloud. It is restricted to the ChatGPT package.</string>
+</resources>
