@@ -160,6 +160,6 @@ object FrameHub {
         }
     }
 
-    private const val BUFFER_RETENTION_MS = 3_000L
-    private const val MAX_BUFFERED_FRAMES = 90
+    private const val BUFFER_RETENTION_MS = 7_000L
+    private const val MAX_BUFFERED_FRAMES = 220
 }
