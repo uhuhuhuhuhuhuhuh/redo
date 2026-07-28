@@ -29,18 +29,36 @@ jobs:
         with:
           gradle-version: '8.13'
       - name: Build APK
+        id: build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -o pipefail
-          gradle --no-daemon --console=plain :companion:assembleDebug 2>&1 | tail -n 250
+          set +e
+          gradle --no-daemon --console=plain :companion:assembleDebug > build.log 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          tail -n 250 build.log
+          exit 0
       - name: Collect APK and source notes
+        if: steps.build.outputs.exit_code == '0'
         run: |
           mkdir -p dist
           cp companion/build/outputs/apk/debug/companion-debug.apk dist/GlassesHub-debug.apk
           cp README.md dist/README.txt
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        if: steps.build.outputs.exit_code == '0'
+        uses: actions/upload-artifact@v4
         with:
           name: glasses-hub-apk
           path: dist/*
           if-no-files-found: error
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: glasses-hub-build-log
+          path: build.log
+          if-no-files-found: error
+      - name: Fail when Android build fails
+        if: steps.build.outputs.exit_code != '0'
+        run: exit 1
