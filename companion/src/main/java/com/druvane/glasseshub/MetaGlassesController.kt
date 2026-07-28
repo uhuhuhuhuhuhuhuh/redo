@@ -320,7 +320,5 @@ object MetaGlassesController {
         scope.launch { closeSession("Stopped") }
     }
 
-    companion object {
-        private const val TAG = "MetaGlassesController"
-    }
+    private const val TAG = "MetaGlassesController"
 }
