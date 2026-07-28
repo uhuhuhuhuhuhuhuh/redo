@@ -7,15 +7,13 @@ import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.Inet4Address
-import java.net.NetworkInterface
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
-import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -28,29 +26,45 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
     }
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
+    private var endpoint: WifiLanResolver.Endpoint? = null
+    var lastError: String? = null
+        private set
 
     val token: String
         get() = preferences().getString(KEY_TOKEN, null) ?: createToken()
 
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return true
+        val resolved = WifiLanResolver.resolve(context)
+        if (resolved == null) {
+            running.set(false)
+            lastError = "Connect the phone to Wi-Fi or enable its hotspot before starting the LAN viewer"
+            return false
+        }
         return try {
-            val socket = ServerSocket(port).apply { reuseAddress = true }
+            val socket = ServerSocket().apply {
+                reuseAddress = true
+                bind(InetSocketAddress(resolved.address, port))
+            }
+            endpoint = resolved
             serverSocket = socket
             acceptThread = Thread({ acceptLoop(socket) }, "glasses-web-server").apply {
                 isDaemon = true
                 start()
             }
+            lastError = null
             true
         } catch (error: IOException) {
             running.set(false)
+            endpoint = null
+            lastError = "Unable to bind Wi-Fi LAN port $port: ${error.message}"
             Log.e(TAG, "Unable to start local web server", error)
             false
         }
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
+        running.set(false)
         try {
             serverSocket?.close()
         } catch (_: IOException) {
@@ -58,14 +72,17 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
         serverSocket = null
         acceptThread?.interrupt()
         acceptThread = null
+        endpoint = null
     }
 
     fun isRunning(): Boolean = running.get()
 
     fun viewerUrl(): String {
-        val ip = findLanAddress() ?: "127.0.0.1"
+        val ip = endpoint?.address?.hostAddress ?: return ""
         return "http://$ip:$port/?token=$token"
     }
+
+    fun interfaceName(): String = endpoint?.interfaceName.orEmpty()
 
     private fun acceptLoop(socket: ServerSocket) {
         while (running.get()) {
@@ -129,7 +146,7 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
             <head>
               <meta charset="utf-8">
               <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-              <title>Glasses Hub Camera</title>
+              <title>Glasses Hub Wi-Fi Camera</title>
               <style>
                 :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#101112;color:#f5f5f5}
                 body{margin:0;padding:18px;max-width:920px;margin-inline:auto}
@@ -141,11 +158,11 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
               </style>
             </head>
             <body>
-              <div class="card"><h1>Glasses Hub camera</h1><div class="muted">Live view from the phone-hosted local network service.</div></div>
-              <div class="card"><img src="/stream.mjpg?token=$safeToken" alt="Live glasses view"></div>
-              <div class="card"><a href="/snapshot.jpg?token=$safeToken">Open snapshot</a><button onclick="location.reload()">Reconnect viewer</button></div>
+              <div class="card"><h1>Glasses Hub camera</h1><div class="muted">Wi-Fi LAN playback with the fixed delay configured on the phone. The phone preview remains unbuffered.</div></div>
+              <div class="card"><img src="/stream.mjpg?token=$safeToken" alt="Delayed glasses view"></div>
+              <div class="card"><a href="/snapshot.jpg?token=$safeToken">Open delayed snapshot</a><button onclick="location.reload()">Reconnect viewer</button></div>
               <div class="card status" id="status">Loading status…</div>
-              <div class="card muted">This endpoint is intended for a trusted LAN. Do not port-forward it to the public internet.</div>
+              <div class="card muted">This endpoint is bound only to the phone's Wi-Fi or hotspot LAN. Do not port-forward it to the public internet.</div>
               <script>
                 const token=${jsString(safeToken)};
                 async function update(){
@@ -172,17 +189,23 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
         output.flush()
         FrameHub.viewerConnected()
         try {
-            var lastSequence = 0L
+            var nextFrameAtNs = System.nanoTime()
             while (running.get()) {
-                val frame = FrameHub.awaitFrame(lastSequence, 5_000) ?: continue
-                lastSequence = frame.sequence
-                output.write("--frame\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write("Content-Type: image/jpeg\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write("Content-Length: ${frame.jpeg.size}\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write("X-Frame-Sequence: ${frame.sequence}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.write(frame.jpeg)
-                output.write("\r\n".toByteArray(StandardCharsets.US_ASCII))
-                output.flush()
+                val settings = LanStreamSettings.state.value
+                val targetTimestamp = System.currentTimeMillis() - settings.delayMs
+                val frame = FrameHub.playbackFrame(targetTimestamp, 50L)
+                if (frame != null) {
+                    output.write("--frame\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write("Content-Type: image/jpeg\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write("Content-Length: ${frame.jpeg.size}\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write("X-Frame-Sequence: ${frame.sequence}\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write("X-Playback-Delay-Ms: ${settings.delayMs}\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.write(frame.jpeg)
+                    output.write("\r\n".toByteArray(StandardCharsets.US_ASCII))
+                    output.flush()
+                }
+                nextFrameAtNs += 1_000_000_000L / settings.outputFps.coerceAtLeast(1)
+                sleepUntil(nextFrameAtNs)
             }
         } finally {
             FrameHub.viewerDisconnected()
@@ -190,7 +213,8 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
     }
 
     private fun sendSnapshot(output: BufferedOutputStream) {
-        val frame = FrameHub.latestFrame()
+        val delayMs = LanStreamSettings.delayMs()
+        val frame = FrameHub.playbackFrame(System.currentTimeMillis() - delayMs) ?: FrameHub.latestFrame()
         if (frame == null) {
             sendText(output, 503, "Service Unavailable", "No camera frame is available yet")
             return
@@ -202,8 +226,11 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
 
     private fun sendStatus(output: BufferedOutputStream) {
         val stats = FrameHub.stats.value
+        val previewStats = PreviewFrameHub.stats.value
+        val audioStats = AudioFrameHub.stats.value
         val age = if (stats.lastFrameAtMs == 0L) -1 else System.currentTimeMillis() - stats.lastFrameAtMs
-        val body = """{"source":${json(stats.source)},"resolution":${json(if (stats.width > 0) "${stats.width}x${stats.height}" else "none")},"frames":${stats.frames},"viewers":${stats.viewers},"lastFrameAgeMs":$age,"serverRunning":${running.get()}}"""
+        val endpointValue = endpoint
+        val body = """{"source":${json(stats.source)},"resolution":${json(if (stats.width > 0) "${stats.width}x${stats.height}" else "none")},"directPreviewFps":${formatFloat(previewStats.fps)},"lanEncodedFps":${formatFloat(stats.encodedFps)},"frames":${stats.frames},"viewers":${stats.viewers},"fixedDelayMs":${LanStreamSettings.delayMs()},"bufferedFrames":${stats.bufferedFrames},"bufferedDurationMs":${stats.bufferedDurationMs},"audioSource":${json(audioStats.source)},"audioReady":${audioStats.ready},"audioChunks":${audioStats.chunks},"wifiInterface":${json(endpointValue?.interfaceName.orEmpty())},"lastFrameAgeMs":$age,"serverRunning":${running.get()}}"""
             .toByteArray(StandardCharsets.UTF_8)
         sendHeaders(output, 200, "OK", "application/json; charset=utf-8", body.size.toLong(), cache = false)
         output.write(body)
@@ -268,20 +295,17 @@ class LocalWebServer(private val context: Context, private val port: Int = DEFAU
     private fun preferences(): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun findLanAddress(): String? {
-        return try {
-            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-            interfaces.asSequence()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { Collections.list(it.inetAddresses).asSequence() }
-                .filterIsInstance<Inet4Address>()
-                .firstOrNull { it.isSiteLocalAddress }
-                ?.hostAddress
-        } catch (error: SocketException) {
-            Log.w(TAG, "Unable to determine LAN address", error)
-            null
+    private fun sleepUntil(targetNs: Long) {
+        val remaining = targetNs - System.nanoTime()
+        if (remaining <= 0L) return
+        try {
+            Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
     }
+
+    private fun formatFloat(value: Float): String = String.format(Locale.US, "%.1f", value)
 
     private fun json(value: String): String =
         "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\""
