@@ -26,7 +26,7 @@ object RawFramePipeline {
     }
 
     private object RawFramePool {
-        private const val MAX_RETAINED = 8
+        private const val MAX_RETAINED = 10
         private val lock = Any()
         private val buffers = ArrayDeque<ByteArray>()
 
@@ -49,16 +49,13 @@ object RawFramePipeline {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val generation = AtomicLong(0L)
-    private val timestampLock = Any()
-    private var sourceBaseUs = Long.MIN_VALUE
-    private var wallBaseMs = 0L
     private val previewChannel = Channel<SharedRawFrame>(
         capacity = 1,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
         onUndeliveredElement = { it.release() },
     )
     private val webChannel = Channel<SharedRawFrame>(
-        capacity = 3,
+        capacity = 4,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
         onUndeliveredElement = { it.release() },
     )
@@ -85,7 +82,7 @@ object RawFramePipeline {
                             jpeg = jpeg,
                             width = frame.width,
                             height = frame.height,
-                            source = "Meta glasses buffered web feed",
+                            source = "Meta glasses buffered Wi-Fi feed",
                             timestampMs = frame.timestampMs,
                         )
                     }
@@ -104,7 +101,7 @@ object RawFramePipeline {
 
         val bytes = RawFramePool.acquire(expected)
         duplicate.get(bytes, 0, expected)
-        val timestampMs = mapPresentationTimestamp(presentationTimeUs)
+        val timestampMs = MediaTimeline.map(presentationTimeUs)
         val shared = SharedRawFrame(bytes, width, height, timestampMs, generation.get())
 
         val previewResult = previewChannel.trySend(shared)
@@ -116,23 +113,7 @@ object RawFramePipeline {
 
     fun clear(source: String) {
         generation.incrementAndGet()
-        synchronized(timestampLock) {
-            sourceBaseUs = Long.MIN_VALUE
-            wallBaseMs = 0L
-        }
         PreviewFrameHub.clear(source)
         FrameHub.resetSource(source)
-    }
-
-    private fun mapPresentationTimestamp(presentationTimeUs: Long): Long {
-        val now = System.currentTimeMillis()
-        if (presentationTimeUs <= 0L) return now
-        return synchronized(timestampLock) {
-            if (sourceBaseUs == Long.MIN_VALUE || presentationTimeUs < sourceBaseUs) {
-                sourceBaseUs = presentationTimeUs
-                wallBaseMs = now
-            }
-            wallBaseMs + (presentationTimeUs - sourceBaseUs) / 1_000L
-        }
     }
 }
