@@ -11,6 +11,7 @@ class GlassesHubApp : Application() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        LanStreamSettings.initialize(this)
         Wearables.initialize(this)
             .onFailure { error, _ -> Log.e(TAG, "DAT initialization failed: ${error.description}") }
         MetaGlassesController.initialize(this)
@@ -20,10 +21,10 @@ class GlassesHubApp : Application() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 GlassesForegroundService.CHANNEL_ID,
-                "Glasses connection and web camera",
+                "Glasses connection and LAN camera",
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                description = "Keeps the glasses session and local camera viewer active."
+                description = "Keeps the glasses session, Wi-Fi viewer and DroidCam-compatible feed active."
                 setShowBadge(false)
             }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
