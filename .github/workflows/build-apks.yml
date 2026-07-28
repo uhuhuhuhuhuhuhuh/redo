@@ -31,7 +31,9 @@ jobs:
       - name: Build APK
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gradle --no-daemon :companion:assembleDebug
+        run: |
+          set -o pipefail
+          gradle --no-daemon --console=plain :companion:assembleDebug 2>&1 | tail -n 250
       - name: Collect APK and source notes
         run: |
           mkdir -p dist
