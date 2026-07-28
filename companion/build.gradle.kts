@@ -13,8 +13,8 @@ android {
         applicationId = "com.druvane.glasseshub"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         manifestPlaceholders["mwdat_application_id"] = project.findProperty("mwdatApplicationId")?.toString() ?: "0"
         manifestPlaceholders["mwdat_client_token"] = project.findProperty("mwdatClientToken")?.toString() ?: "0"
@@ -50,4 +50,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("com.meta.wearable:mwdat-core:0.8.0")
     implementation("com.meta.wearable:mwdat-camera:0.8.0")
+    implementation("com.github.SourceUtils:jspeex:b7f6f864f0")
 }
