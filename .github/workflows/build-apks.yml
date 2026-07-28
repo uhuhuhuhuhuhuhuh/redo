@@ -1,11 +1,15 @@
-name: Build bridge APKs
+name: Build Glasses Hub APK
 
 on:
   push:
-    branches: [meta-chatgpt-bridges]
+    branches: [glasses-hub-v0.1]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
 
 jobs:
   build:
@@ -17,22 +21,24 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
-      - name: Install Android SDK packages
+      - name: Install Android SDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
-      - name: Build debug APKs
-        run: gradle --no-daemon :voicebridge:assembleDebug :relaybridge:assembleDebug
-      - name: Collect APKs
+          gradle-version: '8.13'
+      - name: Build APK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gradle --no-daemon :companion:assembleDebug
+      - name: Collect APK and source notes
         run: |
           mkdir -p dist
-          cp voicebridge/build/outputs/apk/debug/voicebridge-debug.apk dist/GlassesVoiceBridge-no-key.apk
-          cp relaybridge/build/outputs/apk/debug/relaybridge-debug.apk dist/GlassesChatRelay-no-key.apk
+          cp companion/build/outputs/apk/debug/companion-debug.apk dist/GlassesHub-debug.apk
+          cp README.md dist/README.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: meta-chatgpt-no-key-apks
-          path: dist/*.apk
+          name: glasses-hub-apk
+          path: dist/*
           if-no-files-found: error
